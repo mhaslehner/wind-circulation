@@ -66,6 +66,8 @@ mypath = dir + year
 
 files_in_year = [f for f in listdir(mypath) if isfile(join(mypath, f))]
 
+movie_figures = True
+
 
 print(files_in_year)
 #exit()
@@ -89,7 +91,7 @@ for file_ggap in files_in_year:
 # 1. read in the (wind) data---------------------------------------------------------------------------------------------------
     f = Dataset(mypath + file_ggap,'r')
 
-    print('read in file ',file_ggap)
+    print('read in file ',file_ggap,' and time step',timestep)
     #print(f)
     #print(f.variables.keys()) # get all variable names
     p = f.variables['p'][:]
@@ -101,8 +103,8 @@ for file_ggap in files_in_year:
 
     print('finished reading in file ',file_ggap)
     # 2. define a geographic region ('rectangular')-------------------------------------------------------------------------
-    lat0 = -90 # 5 # input in degrees N, must be more southward than lat1
-    lat1 = 90 # 90
+    lat0 = -2 #90 # 5 # input in degrees N, must be more southward than lat1
+    lat1 = 2 #90 # 90
 
     #lon0 = 5# if West
     #lon1 = 0 # if only west
@@ -146,7 +148,7 @@ for file_ggap in files_in_year:
     # define the pressure height values we are interested in
 
     p0 = 5
-    p1 = len(p)-3 # there are 37 pressure height levels
+    p1 = 10 #len(p)-3 # there are 37 pressure height levels
 
     #print('len p',len(p))
     start = timeit.default_timer()
@@ -225,7 +227,7 @@ for file_ggap in files_in_year:
 
     print('plot figure for time step',timestep)
     fps = 2                                         # nb of frames per second for the movie
-    movie_figures = False
+
     if movie_figures == True:
 
      plt.switch_backend('agg')
