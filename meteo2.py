@@ -52,7 +52,26 @@ import requests
 from netCDF4 import Dataset
 import timeit
 
+# ggap:
+#   t
+#	p = 37
+#	latitude = 256
+#	longitude = 512
+# p = 1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 700, 650, 600,
+#    550, 500, 450, 400, 350, 300, 250, 225, 200, 175, 150, 125, 100, 70, 50,
+#    30, 20, 10, 7, 5, 3, 2, 1 ;
 
+# I calculated that 4-8 miles atm pressure height corresponds to 440 - 160 mb, so that we need to take the pressure levels
+# p = 400, 350, 300, 250, 200, 175, 150 (roughly), which means p[17:24]. (24 not included.. how is it in Python again?)
+
+
+#lat [ 89.462944    88.766945    88.06699     87.366035    86.6648
+#  85.96337     85.26186     84.56026     83.858635    83.15699
+#  82.455315    81.75364     81.05194     80.350235    79.64852 ....
+#  ....78.9468      78.245094    77.543365    76.84162     76.139915
+#   8.771913     8.070159     7.368407     6.6666536    5.964901
+#   5.2631474    4.5613947    3.859641     3.1578884    2.4561355
+#   1.7543825    1.0526295    0.35087648  -0.35087648
 
 # http://www.met.reading.ac.uk/~marc/it/snap/varList/eraVars/  --- list of variables
 
@@ -60,12 +79,14 @@ gafs = 'gafs01051979/gafs197901050003.nc' # 00/12 + 3 6 9 12
 ggap = 'ggap01051979/ggap197901050000-c.nc' # 00, 06, 12, 18
 
 dir = '/Volumes/Seagate Backup Plus Drive/meteo-badc/ggap/'
-#year = '1979/' # how to list content of directory?
+# 1979-1993 (1995-2003)
 year = '2003/' # how to list content of directory?
 
-year_n=2003
+dir1 = '/Volumes/Seagate Backup Plus Drive/meteo-2/ggap/'
+# 1994-2018
+# disk1
 
-mypath = dir + year
+year_n = 2003 #1979
 
 def name_is_good(f):
     if f[-3:] == '.nc':
@@ -73,145 +94,489 @@ def name_is_good(f):
     else:
         False
 
+# constants needed for arc calculation:
+R = 6371 * 1e3  # Earth radius, in m
+C = 2 * np.pi * R / 512.  # dr = 2*pi*R*cos(pi*phi/180) would be the whole arc
 
-#constants needed for arc calculation:
-R = 6371*1e3 # Earth radius, in m
-# dr = 2*pi*R*cos(pi*phi/180) would be the whole arc
-C = 2*np.pi*R/512.
-
-
-# 2. define a geographic region ('rectangular')-------------------------------------------------------------------------
-#lat0 = -90  # 5 # input in degrees N, must be more southward than lat1
-#lat1 = 90  # 90
-
-# lon0 = 5# if West
-# lon1 = 0 # if only west
-# print('lat 0, 1 (in degrees N)',lat0, lat1)
+#-----------------------------------------------------------------------------------------------------------------------
 
 
+def circulation(p0,p1,l0,l1,v,lat):
 
-files_in_year = [f for f in listdir(mypath) if isfile(join(mypath, f)) and name_is_good(f)]
-print(files_in_year)
-print((len(files_in_year)/4. - 5)/10.)
+    # calculate the length of the arc between two grid points. This quantity depends on the latitude
 
-files_in_year_for_movie = [files_in_year[40*i] for i in range(int((len(files_in_year)/4.-5)/10.))] # only every 10th day (considering that there are 4 values per day)
-print(files_in_year_for_movie)
-#exit()
-#nb_of_files_per_year = len(files_in_year)
-#print(nb_of_files_per_year)
+    #print('v.shape',np.shape(v))
+    #print('pressure height of interest (in mb)',pa,len(pa))
 
-# the file names are of the kind ggapYYYYMMDD-c.nc. Determine a list of files corresponding to a same day
-dates = np.unique(np.array([f[4:12] for f in files_in_year_for_movie]))
-# then for each day, we can read in the files and calculate the daily mean
+    lat_selected = np.array([lat[i] for i in range(l0, l1)])
+
+    arc = np.zeros((p1 - p0, len(lat_selected)))  # the radius for the calculation depends on the latitude
+    cir = np.zeros((p1 - p0, len(lat_selected)))  # !!! an error ocurred bc of non restriction of latitudes in the initialization
+
+    #print('shape of circulation',np.shape(cir))
+    #print('nb of pressure height elements in the interval',p0,p1,':',p1-p0,'=?')
+
+    for la in range(len(lat_selected)):
+        r = np.cos(np.pi / 180 * lat_selected[la])  # latitude array in degrees. 'flat radius' (radius of the cut circle at given lat) corresponding to the given latitude
+        arc[:,la] = C * r  # calculation of a little piece of the Umfang (line length) of the latitude arc that goes around the globe.
+
+    cir[:,:] = np.sum(v[0, p0:p1, l0:l1, :],axis=2) * arc[:,:] * 1.0e-6  # asum over longitudinal points,
+
+        #print('min, mean, max daily mean circulation per day [km2/s]', cir.min(), cir.mean(), cir.max())
+
+    return cir,lat_selected
+
+def max_circ(cir,p0,l0):
+
+    #print(np.shape(cir))
+
+    maxim = np.unravel_index(cir[:,:].argmax(), cir[:,:].shape)
+
+    (pre, latit) = maxim
+
+    pre_init = pre + p0
+    lat_init = latit + l0
+
+    return maxim,pre_init,lat_init
+
+def adjustFigAspect(fig, aspect=1):
+    '''
+    Adjust the subplot parameters so that the figure has the correct
+               aspect ratio.
+    '''
+    xsize, ysize = fig.get_size_inches()
+    minsize = min(xsize, ysize)
+    xlim = .4 * minsize / xsize
+    ylim = .4 * minsize / ysize
+    if aspect < 1:
+        ylim *= aspect
+    else:
+        xlim /= aspect
+    fig.subplots_adjust(left=.5 - xlim,
+                        right=.5 + xlim,
+                        bottom=.5 - ylim,
+                        top=.5 + ylim)
 
 
-# the following loop creates one (mean) value per day
-start = timeit.default_timer()
-timestep = 0
-for d in dates: # for those files corresponding to a same day, within each year, list all of them
+
+
+
+def plot(timestep,p0,p1,l0, l1,cir,year_n):
+    plt.switch_backend('agg')
+    cir_min = -1500
+    cir_max = 1500
+    levels = MaxNLocator(nbins=15).tick_values(cir[:, :].min(), cir[:, :].max())
+    # fig, (ax0, ax1) = plt.subplots(nrows=2)
+    fig, ax1 = plt.subplots(nrows=1)
+    im = plt.imshow(np.transpose(cir[:, :]), extent=(p0 * 10, (p1 - 1) * 10, l1 - 1, l0),
+                    interpolation='nearest', cmap=cm.gist_rainbow)
+    # ax1.set_xticks(range(len(labels1)), [i for i in labels1])
+    # ax = fig.add_subplot(131)
+    # mesh = ax1.pcolormesh(data, cmap=cm)
+    im.set_clim(cir_min, cir_max)
+    fig.colorbar(im, shrink=0.6)
+    ax1.set_title('daily wind circulation (' + str(year_n) + '), day %03d ' % (timestep))
+    ax1.set_xlabel('pressure height')
+    ax1.set_ylabel('latitudes')
+    fig.tight_layout()
+    print('time step', timestep)
+    plt.savefig("_tmp%05d.png" % timestep)
+
+
+
+
+def plot_final(p0,p1,l0,l1,cir,var,color):
+    fh = 5  # figheight
+    fw = 12.5  # figwidth
+
+    m = 6
+    plt.switch_backend('agg')
+
+    #fig = plt.figure()
+    #levels = MaxNLocator(nbins=15).tick_values(cir[:, :].min(), cir[:, :].max())
+    #fig, (ax0, ax1) = plt.subplots(nrows=2)
+
+    #ax1 = fig.add_subplot(311)
+    fig, ax1 = plt.subplots(nrows=1)
+    #adjustFigAspect(fig, aspect=.4)
+
+    fig.set_figheight(fh)
+    fig.set_figwidth(fw)
+
+    # y0 = 1979
+    #xtim = np.array([y0 + i for i in range(40)])
+
+
+    plt.plot((cir),'o',color,linewidth=1.1)
+    ax1.set_title('daily '+str(var)+' for region (p,lat) = (['+str(p0)+','+str(p1)+'],['+str(l0)+','+str(l1)+'])')
+    ax1.set_xlabel('year')
+    ax1.set_ylabel(''+str(var)+'')
+
+    fig.tight_layout()
+    plt.xticks(fontsize=m)
+    plt.yticks(fontsize=m)
+    ax1.legend(fontsize=m)
+
+    plt.savefig(''+str(var)+'1979-2018.png')
+
+
+
+def Read_files(mypath,files_for_day):
+
     v_total = []
-    files_for_date = [f for f in files_in_year_for_movie if f[4:12] == d] # list of files corresponding to the same day
+    for file in files_for_day:  # daily values
 
-
-    for file in files_for_date: # daily values
-
-        #---------------------------------------------------------------------------------------------------
+        # ---------------------------------------------------------------------------------------------------
         # 1. Read in the (wind) data
-        #----------------------------------------------------------------------------------------------------
+        # ----------------------------------------------------------------------------------------------------
 
         f = Dataset(mypath + file, 'r')
 
-        print('read in file ', file)
+        # print('read in file ', file)
         p = f.variables['p'][:]
         lat = f.variables['latitude'][:]
-        lon = f.variables['longitude'][:]
+        #lon = f.variables['longitude'][:]
         # vort = f.variables['VO'] # vorticity [1/s]
         v = f.variables['U']  # zonal wind (t,p,lat,lon)
         # time = f.variables['t'][:] # in these files this is only 1 value! (daily)
-
-        print('finished reading in file ', file)
-
+        # print('finished reading in file ', file)
 
         # calculate daily mean of v----:
-        v_total.append(v)
+        v_total.append(v)  # (t,p,lat,lon),(t,p,lat,lon),(t,p,lat,lon),...
+
     v_total = np.asarray(v_total)
-    v_total = np.sum(v_total,axis=0)/len(files_for_date)
+    v_total = np.sum(v_total, axis=0) / len(files_for_day)
 
-    # -----------------------------------------------------------------------------------------------------------------------
-    # 2. Calculate the circulation along a latitude circle around the globe: Sum_over_longitudes(v)*dl
-    # ---------------------------------------------------------------------------------------------------
+    return v_total,lat,p
 
-    # calculate the length of the arc between two grid points. This quantity depends on the latitude
-    # arc = np.array([C*r for r ])
-
-    arc = np.zeros(len(lat))  # the radius for the calculation depends on the latitude
-
-    # define the pressure height values (indices) we are interested in
-    p0 = 5
-    p1 = len(p) - 3  # there are 37 pressure height levels
-    # print('len p',len(p))
+def Main(files_for_day,mypath,p0, p1, l0, l1,timestep,plo):
 
 
+        v_total,lat,p = Read_files(mypath,files_for_day)
 
-    cir = np.zeros((p1 - p0, len(lat)))  # !!! an error ocurred bc of non restriction of latitudes in the initialization
-    pa = np.array([i for i in range(p0, p1)])  # pressure coordinate indices (grid pts of array)
-    # print('pressure height of interest (in mb)',pa,len(pa))
-    # pa1 = np.array([i for i in range(p0-1, p1+1)]) # extended pressure height array
+        # -----------------------------------------------------------------------------------------------------------------------
+        # 2. Calculate the circulation along a latitude circle around the globe: Sum_over_longitudes(v)*dl
+        # ---------------------------------------------------------------------------------------------------
 
+        cir,lat_selected = circulation(p0, p1, l0, l1, v_total, lat)
 
-    for la in range(len(lat)):
-        r = np.cos(np.pi/180*lat[la]) # latitude array in degrees. 'flat radius' (radius of the cut circle at given lat) corresponding to the given latitude
-        arc[la] = C*r                 # calculation of a little piece of the Umfang (line length) of the latitude arc that goes around the globe.
-
-    # calculate circulation
+        if plo == True:
+           plot(timestep, p0, p1, l0, l1,cir,year_n)
 
 
-    for pr in range(len(pa)): # indices of pressure. stops at 23, 24 should not be in the list
-        for l in range(len(lat)):
-            cir[pr,l] = np.sum(v_total[0,pa[pr],l,:])*arc[l]*1.0e-6 # asum over longitudinal points,
+        # -----------------------------------------------------------------------------------------------------------------------        #
+        # 3. Calculate maximum circulation in given region for given day
+        # -----------------------------------------------------------------------------------------------------------------------
 
-    print('min, mean, max daily mean circulation per day [km2/s]', cir.min(), cir.mean(), cir.max())
+        maxi,pre_init,lat_init = max_circ(cir,p0,l0)
+        (pre, latit) = maxi
 
-    #-----------------------------------------------------------------------------------------------------------------------
-    # 3. Calculate the Laplacian and the first derivative of the circulation function as a function
-    #    of p and latitude (at each grid point except at the boundaries)
-    #
-    #   Delta f = d2f/dlat2 + d2f/dp2
-    #-----------------------------------------------------------------------------------------------------------------------
-    #df2 = np.zeros((p1 - p0, len(lat)))
-    #for pr in range(len(pa)): # indices of pressure. stops at 23, 24 should not be in the list
-    #    for l in range(len(lat)):
-    #       if pr-1 >= 0 and pr+1 <= p1-p0-2:
-    #         d2f_p = (cir[pr+1,l]-cir[pr-1,l]-2*cir[pr,l])/float(pa[pr+1]-pa[pr])
-    #         df_p =  (cir[pr+1,l]-cir[pr-1,l])/2.*(pa[pr+1]-pa[pr])
-    #       else:
-    #          d2f_p = 0
-    #          df_p =0
+        #print('shape of circ',np.shape(cir),'cir[',pre_init, lat_init,']', cir[pre, latit], 'p', p[pre_init], ' (mb), lat', lat[lat_init],' (degrees) for file',file,'day ',timestep)
 
+        #np.where(a == a.max())
+        # (array([0]), array([2]))
+        return cir, maxi, pre_init,lat_init
 
-    #       if l-1 >= 0 and l <= len(lat)-2:
-    #          d2f_l = (cir[pr, l+1] - cir[pr, l-1])/float(lat[l+1]-lat[l])
-    #          df_l = (cir[pr + 1, l] - cir[pr - 1, l]) / 2. * (lat[l+1]-lat[l])
-    #       else:
-    #           d2f_l = 0
-    #           df_l = 0
+#-----------------------------------------------------------------------------------------------------------------------
+#
+#
+# Main code
+#
+#
+#-----------------------------------------------------------------------------------------------------------------------
+# files in year .. files from path
+# dates...         strings corresponding to indices 4:12 (YYYYMMDD) in the filenames
+# mypath ... mypath = dir + year
+
+# prepare the files that we want to read in
+# the file names are of the kind ggapYYYYMMDD-c.nc. Determine a list of files corresponding to a same day
+# then for each day, we can read in the files and calculate the daily mean
 
 
-           # scale the Laplacian by the norm of the first derivative
-    #       df2[pr,l] = (d2f_p + d2f_l)/np.sqrt(abs(df_p)**2 +abs(df_l)**2)
+# there are 37 pressure height levels
+pr0 =  15 #7 # 400mb
+pr1 =  25 # 15
+# 100mb
+# define a geographic region ('rectangular')-------------------------------------------------------------------------
+lat0 = 150  # 5 # input in degrees N, must be more southward than lat1
+lat1 = 200# 60  # 90
 
-    #       print('pr',pr,'lat',l,'df2',df2)
+
+start = timeit.default_timer()
+fps = 3
+#day = 110
+#d = dates[day] # has 365 inputs because of np.unique only takes sorted unique value...same day :-)
+# list of files for this given day:
+#files_for_day = [f for f in files_in_year if f[4:12] == d]
+
+# 1979-1993
+year0 = 1979
+yrs = [(str(year0+i)+'/') for i in range(15)]
+yrs_ = [(year0+i) for i in range(15)]
+# 1994-2018, in combination with a different hard disk and path
+yrs1 = [(str(year0+i)+'/') for i in range(15,40)]
+yrs1_ = [(year0+i) for i in range(15,40)]
+
+print(yrs1)
+print(yrs1_)
+
+#mypath = dir + year
+
+# dir1 if we use the other hard disk ()
+mypath = [dir1 + ye for ye in yrs1]
+calculate_circulation = False
+if calculate_circulation == True:
+
+ for k in range(len(yrs1_)):
+
+    mypaths = dir1 + yrs1[k]
+
+    files_in_year = [f for f in listdir(mypaths) if isfile(join(mypaths, f)) and name_is_good(f)]  # lists files from path
+    dates = np.unique(np.array([f[4:12] for f in files_in_year]))  # dates: strings corresponding to indices 4:12 in the filenames
+    dates2 = [dates[d] for d in range(len(dates)) if d % 5 == 0]
+
+    print('year ', yrs1_[k])
+    timestep = 0
+
+    file_name = 'Circ_'+str(yrs1_[k])+'.txt'
+    #with open('Circ_'+str(yrs1_[k])+'.txt',w+) as outfile:
+    f = open(file_name,'w+')
+    #with open(newfilename1, 'w+') as outfile:
+    #        np.savetxt(outfile, ar, fmt=['%10.6f', '%10.8f'])
+    #    dec_data = np.genfromtxt(newfilename, usecols=(0, 1))
+
+    #print(len(dates))
+    for d in dates:  # all files, sorted according to the date, for a given year. Each file corresponds to a year
+#
+        files_for_day = [f for f in files_in_year if f[4:12] == d]  # list of files corresponding to the given day d in the loop
+
+        cir, max_cir, pre, latit = Main(files_for_day,mypaths,pr0, pr1, lat0, lat1,timestep,False)
+
+        #cir.append(cir) # ,pre.append(), latit
+        print('write to file for d',d)
+        f.write('%6.3f\t %d\t %d\t \n' % (cir[max_cir],pre,latit))  # \n.. next line
 
 
-    # these values in 3 and 2 are daily means
+        # L =\t%f \n
+        #np.savetxt(outfile, ar, fmt=['%10.6f', '%10.8f'])
+        #np.savetxt('circulation_year'+str(yrs1_[k])+'.txt',cir) # save circulation (pr,lat) in a file for each ...day and year
 
-    #-----------------------------------------------------------------------------------------------------------------------
-    # 4. Calculate the Laplacian at each grid point except at the boundaries
-    #
-    #   Delta f = d2f/dx2 + d2f/
-    #-----------------------------------------------------------------------------------------------------------------------
-    # movie of 2D:
+        timestep = timestep + 1
 
+    f.close()
+
+#------- final analysis of the time series---------------------
+
+year_list = [(year0+i) for i in range(40)]
+print('analysis for years', year_list)
+
+
+
+
+
+total_cir = [np.loadtxt('Circ_'+str(j)+'.txt') for j in year_list] #- result is [nparray(365,3) , nparray(366,3) , ...]
+
+print('shape',[np.shape(x) for x in total_cir])
+
+total_cir = np.concatenate(total_cir,axis=0)
+
+print(np.shape(total_cir))
+
+# plot
+plot_final(pr0,pr1,lat0,lat1,total_cir[:, 0],'circulation','b')
+plot_final(pr0,pr1,lat0,lat1,total_cir[:, 1],'pressure height','g')
+plot_final(pr0,pr1,lat0,lat1,total_cir[:, 2],'latitude','r')
+exit()
+
+#---------------------------------------------------------
+
+
+
+    #print(np.shape(cir)) # cir has shape (pr,lat)
+        #exit()
+        #with file('Yearlydeviation'+str(region)+'.txt','w') as outfile:
+        #    outfile.write('# Array shape of yearly T mean:{0}\n'.format(summer_dev.shape))
+        #    for slice_tot in summer_dev:
+        #        np.savetxt(outfile,slice_tot)
+        #        outfile.write('# Newline\n')
+        # summer_mean = np.loadtxt('circulation_year'+str(yrs_[k])+'.txt')
+        # summer_mean = summer_mean.reshape((pr1-pr0,lat1-lat0))
+        #np.zeros((p1 - p0, len(lat_selected)))
+
+
+#np.savetxt('Models'+str(region)+'.txt',models)
+# print '--- CREATE TEXTFILE FOR YEARLY DEVIATION'
+#with file('Yearlydeviation'+str(region)+'.txt','w') as outfile:
+#    outfile.write('# Array shape of yearly T mean:{0}\n'.format(summer_dev.shape))
+#    for slice_tot in summer_dev:
+#        np.savetxt(outfile,slice_tot)
+#        outfile.write('# Newline\n')
+
+#summer_mean = np.loadtxt('Yearlymean'+str(region)+'.txt')
+#summer_mean = summer_mean.reshape((len(models),16,nb_of_years))
+#summer_dev = np.loadtxt('Yearlydeviation'+str(region)+'.txt')
+#summer_dev = summer_dev.reshape((len(models),16,nb_of_years))
+
+
+
+
+
+
+    #savefig = plot(timestep,pr0,pr1,lat0,lat1,cir,year_n) # timestep,p0,p1,l0, l1,cir,year_n)
+
+    #if timestep == int(365/5.):
+    #    os.system("rm -f movie.mp4")
+    #    os.system("./ffmpeg -r " + str(fps) + " -b 1800 -i _tmp%05d.png movie.mp4")
+    #    os.system("rm _tmp*.png")
+    #    exit()
+#    timestep = timestep + 1
+
+#exit()
+#---------------------------test program
+#print(files_for_day)
+
+# v,lat,p = Read_files(mypath,['ggap197904210600-c.nc'])
+#
+# ci,lat_selected = circulation(0,37,0,25,v,lat)
+#
+# print('cir',ci[0,0])
+
+#cir, pre, latit = Main(files_for_day,mypath,pr0, pr1, lat0, lat1,day)
+
+#pr0 = 20
+##pr1=  25
+#lat0= 50
+#lat1= 100
+
+#cir, max_cir, pre, latit = Main(['ggap197904210600-c.nc'],mypath,pr0, pr1, lat0, lat1, day)
+
+#print('max circ',cir[max_cir],"max_cir",max_cir, 'at indices (p,l)=',pre, latit, 'for (pr0,pr1)=',pr0,pr1,' (l0,l1)=',lat0,lat1)
+
+#print(d)
+
+#exit()
+
+
+
+
+
+
+
+
+        #-----------------------------------------------------------------------------------------------------------------------
+        # 4. Calculate the Laplacian and the first derivative of the circulation function as a function
+        #    of p and latitude (at each grid point except at the boundaries)
+        #
+        #   Delta d2f = d2f/dlat2 + d2f/dp2, df = df_p + df_l
+        #-----------------------------------------------------------------------------------------------------------------------
+#         df2 = np.zeros((p1 - p0, len(lat)))
+#         df = np.zeros((p1 - p0, len(lat)))
+#         k = 1
+#         for pr in range(k,len(pa)-k): # indices of pressure. stops at 23, 24 should not be in the list
+#             for l in range(k,len(lat)-k):
+#                 #       if pr-1 >= 0 and pr+1 <= p1-p0-2:
+#                 d2f_p = (cir[pr+k,l]+cir[pr-k,l]-2*cir[pr,l])/float(pa[pr+k]-pa[pr])
+#                 df_p =  (cir[pr+k,l]-cir[pr-k,l])/(2.*(pa[pr+k]-pa[pr]))
+#                 d2f_l = (cir[pr, l+k] + cir[pr, l-k]-2*cir[pr,l])/float(lat[l+k]-lat[l])
+#                 df_l = (cir[pr, l+k] - cir[pr, l-k]) /(2. * (lat[l+k]-lat[l]))
+#                 # scale the Laplacian by the norm of the first derivative
+#                 df2[pr,l] = (d2f_p + d2f_l)/np.sqrt(abs(df_p)**2 +abs(df_l)**2)
+#                 df[pr, l] = np.sqrt(abs(df_p)**2 +abs(df_l)**2)
+#
+#
+#         # -----------------------------------------------------------------------------------------------------------------------
+#         # 2D plot
+#         # -----------------------------------------------------------------------------------------------------------------------
+#
+#         timestep = timestep + 1
+#
+#         if timestep == 5:
+#             plt.switch_backend('agg')
+#             fig = plt.figure()
+#             levels = MaxNLocator(nbins=15).tick_values(cir[:, :].min(), cir[:, :].max())
+#             # pick the desired colormap, sensible levels, and define a normalization
+#             # instance which takes data values and translates those into levels.
+#             cmap = plt.get_cmap('PiYG')
+#             norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+#             # fig, (ax0, ax1) = plt.subplots(nrows=2)
+#             fig, ax1 = plt.subplots(nrows=1)
+#
+#             pa = np.array([i for i in range(p0, p1)])  # array indices of pressure height
+#
+#             x = np.array([p[prs] for prs in pa])  # pressure at index, in mbar
+#
+#             y = lat  # latitude in degrees
+#
+#             im = plt.imshow(cir[:, :], extent=(x.min(), x.max(), y.max(), y.min()),
+#                             interpolation='nearest', cmap=cm.gist_rainbow)
+#
+#
+#             fig.colorbar(im, shrink=0.4)
+#             ax1.set_title('circulation')
+#             fig.tight_layout()
+#             plt.savefig('test_2D_circul'+str(timestep)+'.pdf')
+#
+#
+#             # 2D plot
+#
+#             plt.switch_backend('agg')
+#             fig = plt.figure()
+#             levels = MaxNLocator(nbins=15).tick_values(df2[:, :].min(), df2[:, :].max())
+#
+#
+#             # pick the desired colormap, sensible levels, and define a normalization
+#             # instance which takes data values and translates those into levels.
+#             cmap = plt.get_cmap('PiYG')
+#             norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+#             # fig, (ax0, ax1) = plt.subplots(nrows=2)
+#             fig, ax1 = plt.subplots(nrows=1)
+#             pa = np.array([i for i in range(p0, p1)])  # array indices of pressure height
+#             x = np.array([p[prs] for prs in pa])  # pressure at index, in mbar
+#             y = lat  # latitude in degrees
+#             im = plt.imshow(df2[:, :], extent=(x.min(), x.max(), y.max(), y.min()),
+#                             interpolation='nearest', cmap=cm.gist_rainbow)
+#             fig.colorbar(im, shrink=0.4)
+#             ax1.set_title('Laplacian of circulation')
+#             fig.tight_layout()
+#             plt.savefig('test_2D_Laplace'+str(timestep)+'.pdf')
+#
+#
+#             plt.switch_backend('agg')
+#             fig = plt.figure()
+#             levels = MaxNLocator(nbins=15).tick_values(df[:, :].min(), df[:, :].max())
+#             # pick the desired colormap, sensible levels, and define a normalization
+#             # instance which takes data values and translates those into levels.
+#             cmap = plt.get_cmap('PiYG')
+#             norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+#             # fig, (ax0, ax1) = plt.subplots(nrows=2)
+#             fig, ax1 = plt.subplots(nrows=1)
+#             pa = np.array([i for i in range(p0, p1)])  # array indices of pressure height
+#             x = np.array([p[prs] for prs in pa])  # pressure at index, in mbar
+#             y = lat  # latitude in degrees
+#
+#             #im = plt.imshow(df[:, :], extent=(x.min(), x.max(), y.max(), y.min()),
+#             #                interpolation='nearest', cmap=cm.gist_rainbow)
+#
+#             im = plt.imshow(df[:, :], extent=(x.min(), x.max(), y.max(), y.min()),
+#                             interpolation='nearest', cmap=cm.gist_rainbow)
+#             fig.colorbar(im, shrink=0.4)
+#             ax1.set_title('Gradient of circulation')
+#             fig.tight_layout()
+#             plt.savefig('test_2D_gradient'+str(timestep)+'.pdf')
+#
+#
+# exit()
+#     # these values in 3 and 2 are daily means
+#
+#
+#
+#     #
+
+
+movie = False
+if movie == True:
+ timestep = 0
+ for d in dates:  # for those files corresponding to a same day, within each year, list all of them
 
     print('plot figure for time step',timestep)
     fps = 3                                         # nb of frames per second for the movie
@@ -226,7 +591,6 @@ for d in dates: # for those files corresponding to a same day, within each year,
      levels = MaxNLocator(nbins=15).tick_values(cir[:, :].min(), cir[:, :].max())
      # pick the desired colormap, sensible levels, and define a normalization
      # instance which takes data values and translates those into levels.
-     # labels1 = label.astype(int)
      cmap = plt.get_cmap('PiYG')
      norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
      # fig, (ax0, ax1) = plt.subplots(nrows=2)
@@ -234,38 +598,32 @@ for d in dates: # for those files corresponding to a same day, within each year,
      pa = np.array([i for i in range(p0, p1)])  # array indices of pressure height
      x = np.array([p[prs] for prs in pa])  # pressure at index, in mbar
      y = lat  # latitude in degrees
-
-     im = plt.imshow(cir[:, :], extent=(p0*10, (p1-1)*10, 0, len(lat)-1),
+     im = plt.imshow(cir[:, :], extent=(x.min(), x.max(), y.max(), y.min()),
                     interpolation='nearest', cmap=cm.gist_rainbow)
-     # labels1 = label.astype(int)
+     fig.colorbar(im, shrink=0.4)
 
-     #ax1.set_xticks(range(len(labels1)), [i for i in labels1])
+
+
      #fig = plt.figure()
      #ax = fig.add_subplot(131)
      #mesh = ax1.pcolormesh(data, cmap=cm)
      im.set_clim(cir_min, cir_max)
-     fig.colorbar(im, shrink=0.4)
-     ax1.set_title('daily wind circulation ('+str(year_n)+'), day %03d ' %(timestep*10))
-     ax1.set_xlabel('pressure height')
-     ax1.set_ylabel('latitudes')
+
+     ax1.set_title('daily wind circulation (1979), day %03d ' %timestep)
      fig.tight_layout()
      print('time step',timestep)
+
      plt.savefig("_tmp%05d.png" % timestep)
 
      timestep = timestep +1
      #plt.clf()  # Clear the figure to make way for the next image.
 
-     if timestep == 36:
+     if timestep == 364:
         os.system("rm -f movie.mp4")
         os.system("./ffmpeg -r " + str(fps) + " -b 1800 -i _tmp%05d.png movie.mp4")
         os.system("rm _tmp*.png")
 
         exit()
-
-
-# movie
-#timestep = 0
-#for d in dates: # for those files corresponding to a same day, within each year, list all of them
 
 
 
@@ -307,17 +665,6 @@ movie_figures = True
 
 print(files_in_year)
 #exit()
-# ggap:
-#   t
-#	p = 37
-#	latitude = 256
-#	longitude = 512
-# p = 1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 700, 650, 600,
-#    550, 500, 450, 400, 350, 300, 250, 225, 200, 175, 150, 125, 100, 70, 50,
-#    30, 20, 10, 7, 5, 3, 2, 1 ;
-
-# I calculated that 4-8 miles atm pressure height corresponds to 440 - 160 mb, so that we need to take the pressure levels
-# p = 400, 350, 300, 250, 200, 175, 150 (roughly), which means p[17:24]. (24 not included.. how is it in Python again?)
 
 
 
